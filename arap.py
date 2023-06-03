@@ -3,9 +3,7 @@ import os
 import sys
 from pathlib import Path
 from copy import deepcopy
-from tqdm import tqdm
-from enum import IntEnum
-from datetime import datetime
+from logger import Logger
 
 import numpy as np
 from scipy.sparse import coo_matrix, linalg
@@ -21,88 +19,21 @@ from geometry.triangle_mesh_deformation import (
     problem2 as armadillo
 )
 
-class Logger:
-    class Mode(IntEnum):
-        ERROR = 0
-        WARNING = 1
-        INFO = 2
-        DEBUG = 3
-    
-    mode: Mode = Mode.INFO
-    pref: str = 'main'
-    mode2str: dict = {
-        Mode.ERROR: 'ERROR',
-        Mode.WARNING: 'WARNING',
-        Mode.INFO: 'INFO',
-        Mode.DEBUG: 'DEBUG',
-    }
-    
-    @staticmethod
-    def set_log_level(mode: Mode):
-        Logger.mode = mode
-    
-    @staticmethod
-    def set_prefisx(pref: str):
-        Logger.pref = pref
-    
-    @staticmethod
-    def reset_prefisx():
-        Logger.pref = 'main'
-    
-    @staticmethod
-    def prepr_str(s: str, mode: Mode):
-        now = datetime.now()
-        dt_str = now.strftime("%d/%m/%Y %H:%M:%S")
-        s = f'[{dt_str}][{Logger.pref}][{Logger.mode2str[mode]}] {s}'
-        return s
-    
-    @staticmethod
-    def log_debug(s: str):
-        if Logger.mode >= Logger.Mode.DEBUG:
-            s = Logger.prepr_str(s, Logger.Mode.DEBUG)
-            print(s)
-    
-    @staticmethod
-    def log_info(s: str):
-        if Logger.mode >= Logger.Mode.INFO:
-            s = Logger.prepr_str(s, Logger.Mode.INFO)
-            print(s)
-
-    @staticmethod
-    def log_warning(s: str):
-        if Logger.mode >= Logger.Mode.WARNING:
-            s = Logger.prepr_str(s, Logger.Mode.WARNING)
-            print(s, file=sys.stderr)
-
-    @staticmethod
-    def log_error(s: str):
-        if Logger.mode >= Logger.Mode.ERROR:
-            s = Logger.prepr_str(s, Logger.Mode.ERROR)
-            print(s, file=sys.stderr)
-    
-    @staticmethod
-    def tqdm_debug(data, total = None, desc: str = ''):
-        if Logger.mode >= Logger.Mode.DEBUG:
-            if total is None:
-                total = len(data)
-            desc = Logger.prepr_str(desc, Logger.Mode.DEBUG)
-            return tqdm(data, total=total, desc=desc)
-        else:
-            return data
-
 
 class MeshNp:
     def __init__(self, mesh):
         self.mesh_o3d = deepcopy(mesh)
-        self.vertices = np.array(mesh.vertices)
-        self.triangles = np.array(mesh.triangles)
-    
+        self.vertices = np.array(deepcopy(mesh.vertices))
+        self.triangles = np.array(deepcopy(mesh.triangles))
+
+    def set_v_t(self):
+        self.mesh_o3d.vertices = o3d.utility.Vector3dVector(self.vertices)
+        self.mesh_o3d.triangles = o3d.utility.Vector3iVector(self.triangles)
+        self.mesh_o3d.compute_vertex_normals()
+
     def get_o3d(self):
-        mesh = o3d.geometry.TriangleMesh(
-            vertices=o3d.utility.Vector3dVector(self.vertices),
-            triangles=o3d.utility.Vector3iVector(self.triangles)
-        )
-        mesh.compute_vertex_normals()
+        self.set_v_t()
+        mesh = deepcopy(self.mesh_o3d)
         return mesh
     
     def _get_adjacency_list(self):
@@ -198,16 +129,14 @@ class MeshNp:
         save_steps_dir: str = ''
     ) -> o3d.geometry.TriangleMesh:
         Logger.set_prefisx('ARAP')
+        tic = time.time()
+
         if save_steps_dir:
             Logger.log_debug(f'Saving intermediate steps into {save_steps_dir}')
             save_steps_dir = Path(save_steps_dir)
             save_steps_dir.mkdir(parents=True, exist_ok=True)
         
-        prime = o3d.geometry.TriangleMesh(
-            vertices=deepcopy(self.mesh_o3d.vertices),
-            triangles=deepcopy(self.mesh_o3d.triangles),
-        )
-        prime.compute_vertex_normals()
+        prime = self.get_o3d()
         prime = MeshNp(prime)
 
         n_verts = len(self.vertices)
@@ -229,8 +158,10 @@ class MeshNp:
             Rs_old = np.zeros([n_verts], dtype=float)
             surface_area, triangle_areas = prime._get_surface_areas()
 
-        # for iter in tqdm(range(max_iter), total=max_iter, desc='Iterating main loop of ARAP'):
+        # Update rotations
+        # http://graphics.stanford.edu/~smr/ICP/comparison/eggert_comparison_mva97.pdf
         for iter in range(max_iter):
+            tic_step = time.time()
             if energy_model == 'Smoothed':
                 Rs, Rs_old = Rs_old, Rs
 
@@ -256,6 +187,7 @@ class MeshNp:
                 if np.linalg.det(Rs[i]) <= 0:
                     Logger.log_warning("something went wrong with updating R")
             
+            # Update Positions
             for i in range(n_verts):
                 bi = np.zeros((3), dtype=float)
                 if i in constraints:
@@ -270,9 +202,9 @@ class MeshNp:
                 p_prime = solver.solve(b[comp])
                 prime.vertices[:,comp] = p_prime
             
+            # Compute energy and log
             energy = 0.0
             reg = 0.0
-
             for i in range(n_verts):
                 for j in adjacency_list[i]:
                     w = edge_weights[MeshNp._get_ordered_edge(i, j)]
@@ -283,10 +215,10 @@ class MeshNp:
                     
                     if energy_model == 'Smoothed':
                         reg += np.linalg.norm(Rs[i] - Rs[j]) ** 2
-
             if energy_model == 'Smoothed':
                 energy += smoothed_alpha * surface_area * reg
             
+            # save intermeadiate steps
             if save_steps_dir:
                 mehs_path = save_steps_dir / f'iter_{iter:03d}.ply'
                 mehs_path = str(mehs_path.absolute())
@@ -296,8 +228,9 @@ class MeshNp:
             else:
                 s = ''
             
-            Logger.log_debug(f'iter={iter}, energy={energy:e} {s}')
-        
+            Logger.log_debug(f'iter={iter}, energy={energy:e}, time={time.time() - tic_step:.1f}s{s}')
+
+        Logger.log_debug(f'deform took {time.time() - tic:.1f}[s]')
         Logger.reset_prefisx()
         return prime.get_o3d()
 
@@ -307,7 +240,7 @@ def o3d_deform_as_rigid_as_possible(mesh, constraint_ids: np.array, constraint_p
     constraint_pos = o3d.utility.Vector3dVector(constraint_pos)
     tic = time.time()
     mesh_prime = mesh.deform_as_rigid_as_possible(constraint_ids, constraint_pos, max_iter=50)
-    print(f'deform took {time.time() - tic}[s]')
+    print(f'deform took {time.time() - tic:.2f}[s]')
 
     return mesh_prime
 
@@ -325,16 +258,16 @@ if __name__ == "__main__":
     Logger.set_log_level(Logger.Mode.DEBUG)
 
     for mesh, constraint_ids, constraint_pos in [
-            # pick(),
+            pick(),
             # plain(),
-            armadillo()
+            # armadillo()
     ]:
         constraint_ids = np.array(constraint_ids, dtype=np.int32)
 
         mesh_np = MeshNp(mesh)
-        mesh_prime_my = mesh_np.deform_arap(constraint_ids, constraint_pos, save_steps_dir='pick')
+        mesh_prime_my = mesh_np.deform_arap(constraint_ids, constraint_pos, save_steps_dir='data/pick')
         show_transformation(mesh, mesh_prime_my, constraint_pos)
-         # mesh_prime_o3d = o3d_deform_as_rigid_as_possible(mesh, constraint_ids, constraint_pos)
+        # mesh_prime_o3d = o3d_deform_as_rigid_as_possible(mesh, constraint_ids, constraint_pos)
         # show_transformation(mesh, mesh_prime_o3d, constraint_pos)
 
     o3d.utility.set_verbosity_level(o3d.utility.Info)
