@@ -258,16 +258,16 @@ if __name__ == "__main__":
     Logger.set_log_level(Logger.Mode.DEBUG)
 
     for mesh, constraint_ids, constraint_pos in [
-            pick(),
+            # pick(),
             # plain(),
-            # armadillo()
+            armadillo()
     ]:
         constraint_ids = np.array(constraint_ids, dtype=np.int32)
 
-        mesh_np = MeshNp(mesh)
-        mesh_prime_my = mesh_np.deform_arap(constraint_ids, constraint_pos, save_steps_dir='data/pick')
-        show_transformation(mesh, mesh_prime_my, constraint_pos)
-        # mesh_prime_o3d = o3d_deform_as_rigid_as_possible(mesh, constraint_ids, constraint_pos)
-        # show_transformation(mesh, mesh_prime_o3d, constraint_pos)
+        # mesh_np = MeshNp(mesh)
+        # mesh_prime_my = mesh_np.deform_arap(constraint_ids, constraint_pos, save_steps_dir='data/pick')
+        # show_transformation(mesh, mesh_prime_my, constraint_pos)
+        mesh_prime_o3d = o3d_deform_as_rigid_as_possible(mesh, constraint_ids, constraint_pos)
+        show_transformation(mesh, mesh_prime_o3d, constraint_pos)
 
     o3d.utility.set_verbosity_level(o3d.utility.Info)

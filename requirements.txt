@@ -1,0 +1,5 @@
+tqdm
+matplotlib
+numpy
+scipy
+open3d
